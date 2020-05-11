@@ -1,0 +1,94 @@
+---
+title: "Likelihoods"
+runtime: shiny
+output: 
+    html_document:
+        code_folding: hide
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(shiny)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# {.tabset}
+
+## Plotting likelihoods
+
+```{r plot_likelihoods}
+#plot likelihood curve
+theta1 <- seq(0,1,len=100) #create theta variable, from 0 to 1
+fluidRow(
+    column(3, numericInput("n1", "Trials", value=10, min=1, step=1)), #set total trials
+    column(3, numericInput("x1", "Successes", value=8, min=1, step=1)) #set successes
+)
+output$likelihood_plot <- shiny::renderPlot({
+    like1 <- dbinom(input$x1, input$n1, theta1) #create likelihood function
+    data1 <- data.table(like1=like1, theta1=theta1)
+    g <- ggplot(data1, aes(x=theta1, y=like1)) +
+        geom_line() +
+        labs(x="Theta", y="Likelihood", title="Likelihood curve") +
+        theme_bw()
+    g
+})
+
+shiny::plotOutput("likelihood_plot")
+```
+
+## Calculate likelihood ratio
+
+```{r calculate_likelihood_ratio}
+theta2 <- seq(0,1,len=100) #create theta variable, from 0 to 1
+fluidRow(
+    column(3, numericInput("n2", "Trials", value=10, min=1, step=1)),  #set total trials
+    column(3, numericInput("x2", "Successes", value=8, min=1, step=1)), #set successes
+    column(3, numericInput("H0", "H0", value=0.5, min=0, max=1)), #specify one hypothesis you want to compare with the likihood ratio
+    column(3, numericInput("H1", "H1", value=0.05, min=0, max=1)) #specify another hypothesis you want to compare with the likihood ratio
+)
+
+h_likelihoods <- reactive({
+#Returns the likelihood ratio of H0 over H1
+    l0 <- dbinom(input$x2, input$n2, input$H0)
+    l1 <- dbinom(input$x2, input$n2, input$H1)
+    c(l0, l1)
+})
+
+output$plot_calculate_likelihood_ratio <- shiny::renderPlot({
+    l <- h_likelihoods()
+    like2 <- dbinom(input$x2, input$n2, theta2)
+    data2 <- data.table(like2=like2, theta2=theta2)
+    bound <- data.table(
+        x = c(max(input$H0, input$H1)*1.1, max(input$H0, input$H1)*1.1),
+        y = c(l[1], l[2]),
+        x0 = c(input$H0, max(input$H0, input$H1)*1.1),
+        y0 = c(l[1], l[1]),
+        x1 = c(input$H1, max(input$H0, input$H1)*1.1),
+        y1 = c(l[2], l[2])
+    )
+    g <- ggplot(data2, aes(x=theta2, y=like2)) +
+        geom_line() +
+        geom_point(x=input$H0, y=l[1], col="red") +
+        geom_point(x=input$H1, y=l[2], col="red") +
+        geom_line(data=bound, aes(x=x, y=y), col="red") +
+        geom_line(data=bound, aes(x=x0, y=y0), col="red", linetype="dashed") +
+        geom_line(data=bound, aes(x=x1, y=y1), col="red", linetype="dashed") +
+        theme_bw() +
+        labs(
+            x="Theta",
+            y="Likelihood",
+            title=paste(
+                'Likelihood Ratio H0/H1:', round(l[1]/l[2], 2),
+                "\nLikelihood Ratio H1/H0:", round(l[2]/l[1], 2)
+            )
+        )
+    g
+})
+
+shiny::plotOutput("plot_calculate_likelihood_ratio")
+```
+
+
+Daniel Lakens, 2016. 
+This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. https://creativecommons.org/licenses/by-nc-sa/4.0/
