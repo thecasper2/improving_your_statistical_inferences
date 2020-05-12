@@ -1,0 +1,167 @@
+---
+title: "Binomial Bayesian Inference"
+runtime: shiny
+output: 
+    html_document:
+        code_folding: hide
+---
+
+```{r setup, include=FALSE}
+library(binom)
+library(data.table)
+library(ggplot2)
+library(magrittr)
+library(shiny)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r variables}
+theta <- seq(0,1,0.001) #create theta variable, from 0 to 1
+fluidRow(
+    #Set the point null hypothesis you want to calculate the Bayes Factor for
+    column(2, numericInput("H0", "H0", value=0.5, min=0, max=1)),
+    #set total trials
+    column(2, numericInput("n", "Trials", value=20, min=1, step=1)),
+    #set successes
+    column(2, numericInput("x", "Successes", value=10, min=1, step=1)),
+    #Set the alpha for the Beta distribution for the prior
+    column(2, numericInput("aprior", "alpha prior", value=1, min=0)),
+    #Set the beta for the Beta distribution for the prior
+    column(2, numericInput("bprior", "beta prior", value=1, min=0))
+)
+
+#Calculate posterior and Bayes factor
+posterior <- reactive({
+    H0 <- input$H0
+    #Calculate the alpha for the Beta distribution for the likelihood
+    alikelihood <- input$x + 1
+    #Calculate the beta for the Beta distribution for the likelihood
+    blikelihood <- input$n - input$x + 1
+    #Calculate the alpha for the Beta distribution for the posterior
+    aposterior <- input$aprior + alikelihood - 1
+    #Calculate the beta for the Beta distribution for the posterior
+    bposterior <- input$bprior + blikelihood - 1
+    #Calculate posterior mean
+    mean <- (aposterior/(aposterior+bposterior))
+    #Calculate prior and posterior likelihood at H0
+    H0_prior <- dbeta(H0, input$aprior, input$bprior)
+    H0_posterior <- dbeta(H0, aposterior, bposterior)
+    #Calculate 95% credible interval limits
+    LL<-qbeta(.025,aposterior, bposterior) #lower limit credible interval
+    UL<-qbeta(.975,aposterior, bposterior) #upper limit credible interval
+    data <- data.table(
+        theta = theta,
+        prior = dbeta(theta, input$aprior, input$bprior),
+        likelihood = dbeta(theta, alikelihood, blikelihood),
+        posterior = dbeta(theta, aposterior, bposterior)
+    )
+    data[, ci_val := ifelse(theta > LL & theta < UL, posterior, 0)]
+    bayes_factor <- data.table(
+        x = c(H0, H0),
+        y = c(H0_prior, H0_posterior)
+    )
+    ci <- c(LL, UL)
+    list(data=data, bayes_factor=bayes_factor, mean=mean, ci=ci)
+})
+```
+
+
+# {.tabset}
+
+## Binomial Bayes Factor
+
+```{r binomial_bayes_factor}
+output$bayes_factor_plot <- renderPlot({
+    posterior <- posterior()
+    data <- posterior$data %>% melt(id = c("theta", "ci_val"))
+    bayes_factor <- posterior$bayes_factor
+    g <- ggplot(data) +
+        geom_line(
+            aes(x=theta, y=value, col=variable, linetype=variable),
+            size=1.2
+        ) +
+        geom_point(data=bayes_factor, aes(x=x, y=y), col="blue", size=2) +
+        geom_line(data=bayes_factor, aes(x=x, y=y), col="blue") +
+        theme_bw() +
+        labs(
+            x = expression(theta),
+            y = "Density",
+            title = paste0(
+                "Bayes Factor: ",
+                round(bayes_factor$y[2]/bayes_factor$y[1], 2)
+            )
+        ) +
+        scale_color_manual(values=c("grey", "red", "black"))
+    g
+})
+
+plotOutput("bayes_factor_plot")
+```
+
+
+## Binomial Posterior Mean
+
+```{r binomial_posterior_mean}
+numericInput("ymax", "y-axis maximum", value=10, min=1, step=1)
+
+output$binomial_posterior_mean_plot <- renderPlot({
+    posterior <- posterior()
+    data <- posterior$data %>% melt(id = c("theta", "ci_val"))
+    mean <- posterior$mean
+    ci <- posterior$ci
+    g <- ggplot(data) +
+        geom_line(
+            aes(x=theta, y=value, col=variable, linetype=variable),
+            size=1.2
+        ) +
+        geom_area(
+            data = data[(variable=="posterior")],
+            aes(x=theta, y=ci_val),
+            fill="grey",
+            alpha=0.5
+        ) +
+        ylim(0, input$ymax) +
+        theme_bw() +
+        labs(
+            x = expression(theta),
+            y = "Density",
+            title = paste0(
+                "Mean posterior: ", round(mean, 5),
+                "\nCredible Interval:", round(ci[1], 2), ";", round(ci[2], 2)
+            )
+        ) +
+        scale_color_manual(values=c("grey", "red", "black"))
+    g
+})
+
+plotOutput("binomial_posterior_mean_plot")
+```
+
+
+```{r highest_density_interval}
+output$hdi <- renderTable({
+    central_hdi <- binom.bayes(
+        input$x,
+        input$n,
+        type = "central",
+        prior.shape1 = input$aprior,
+        prior.shape2 = input$bprior
+    ) %>% as.data.table
+    central_hdi[, type := "central"]
+    highest_hdi <- binom.bayes(
+        input$x,
+        input$n,
+        type = "highest",
+        prior.shape1 = input$aprior,
+        prior.shape2 = input$bprior
+    ) %>% as.data.table
+    highest_hdi[, type := "highest"]
+    rbind(central_hdi, highest_hdi)
+})
+
+tableOutput("hdi")
+```
+
+
+Daniel Lakens, 2016. 
+This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. https://creativecommons.org/licenses/by-nc-sa/4.0/
