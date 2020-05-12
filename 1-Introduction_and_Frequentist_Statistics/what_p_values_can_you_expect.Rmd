@@ -1,80 +1,121 @@
 ---
 title: "Which p-values can you expect?"
+runtime: shiny
 output: 
     html_document:
         code_folding: hide
 ---
 
 ```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(pwr)
 knitr::opts_chunk$set(echo = TRUE)
 
-#Load pwr package to easily calculate the statistical power
-if(!require(pwr)){install.packages('pwr')}
-library(pwr)
 #Disable scientific notation (1.05e10)
 options(scipen=999)
 set.seed(23)
 ```
 
-# Initialise variables
+## Set variables
 
 ```{r init_variables}
-#Set number of simulations
-nSims <- 100000 #number of simulated experiments
-M <- 106 #Mean IQ score in the sample (will be compared with 100 in a one-sample t-test)
-n <- 26 #set sample size
-SD <- 15 #SD of the simulated data
-#With a mean difference of 6, and SD of 15, and a sample size of 26, the test has 50% power)
-p <- numeric(nSims) #set up empty variable to store all simulated p-values
-bars <- 20
+fluidRow(
+    #number of simulated experiments
+    column(3, numericInput("nSims", "Number of simulations",value=100000, min=1, step=1)),
+    #Mean IQ score in the sample (will be compared with 100 in a one-sample t-test)
+    column(2, numericInput("M", "Mean IQ in sample", value=106, min=1, step=1)),
+    #set sample size
+    column(2, numericInput("n", "Sample size", value=26, min=1, step=1)),
+    #SD of the simulated data
+    column(3, numericInput("SD", "StdDev of simulations", value=15, min=0)),
+    #With a mean difference of 6, and SD of 15, and a sample size of 26, the test has 50% power)
+    #Set your own mu
+    column(2, numericInput("mu", "Hypothesis mean", value=100, min=0))
+)
+
+actionButton("button", label="Run simulation", icon("refresh"))
+
+run_simulation <- eventReactive(input$button, {
+    withProgress(message = "running simulation", value = 0, {
+        #Run simulation
+        nSims <- input$nSims
+        #set up empty variable to store all simulated p-values
+        p <- numeric(nSims)
+        n <- input$n
+        M <- input$M
+        SD <- input$SD
+        mu <- input$mu
+        #for each simulated experiment
+        for(i in 1:nSims){
+            if(i%%round(nSims/10) == 0){incProgress(1/10)}
+            #Simulate data with specified mean, standard deviation, and sample size
+            x <- rnorm(n = n, mean = M, sd = SD)
+            #perform the t-test against mu (set to value you want to test against)
+            z <- t.test(x, mu=mu)
+            #get the p-value and store it
+            p[i] <- z$p.value
+        }
+    })
+
+    power <- pwr.t.test(
+        d=(input$M-100)/input$SD,
+        n=input$n,
+        sig.level=0.05,
+        type="one.sample",
+        alternative="two.sided"
+    )$power #determines M when power > 0. When power = 0, will set  M = 100.
+
+    list(p=p, nSims=nSims, power=power)
+})
 ```
 
-# Simulate power
+## {.tabset}
+
+### Simulated power
 
 ```{r check_power}
-#Run simulation
-for(i in 1:nSims){ #for each simulated experiment
-    x <- rnorm(n = n, mean = M, sd = SD) #Simulate data with specified mean, standard deviation, and sample size
-    z <- t.test(x, mu=100) #perform the t-test against mu (set to value you want to test against)
-    p[i] <- z$p.value #get the p-value and store it
-}
-
 #Check power by summing significant p-values and dividing by number of simulations
-(sum(p < 0.05)/nSims) #power
+renderText({
+    if(input$button == 0){print("Awaiting simulation...")}
+    else{
+        sim <- run_simulation()
+        print(
+            paste0(
+                "The power as determined by the simulations is: ",
+                (sum(sim$p < 0.05)/sim$nSims)
+            )
+        )
+    }
+})
 ```
 
-# Calcuclate power
+### Calcuclated power
 
 ```{r calculate_power}
-#Calculate power formally by power analysis
-power <- pwr.t.test(
-    d=(M-100)/SD,
-    n=n,
-    sig.level=0.05,
-    type="one.sample",
-    alternative="two.sided"
-)$power #determines M when power > 0. When power = 0, will set  M = 100.
+renderText({
+    if(input$button == 0){print("Awaiting simulation...")}
+})
 
-#Plot figure
-op <- par(mar = c(5,7,4,4)) #change white-space around graph
-hist(
-    p,
-    breaks=bars, 
-    xlab="P-values",
-    ylab="number of p-values\n", 
-    axes=FALSE,
-    main=paste(
-        "P-value Distribution with",
-        round(power*100, digits=1),
-        "% Power"
-    ),
-    col="grey",
-    xlim=c(0,1),
-    ylim=c(0, nSims)
-)
-axis(side=1, at=seq(0,1, 0.1), labels=seq(0,1,0.1))
-axis(side=2, at=seq(0,nSims, nSims/4), labels=seq(0,nSims, nSims/4), las=2)
-abline(h=nSims/bars, col = "red", lty=3)
+numericInput("bars", "Number of histogram bars", value=20, min=1, step=1)
+
+renderPlot({
+    sim <- run_simulation()
+    power <- sim$power
+    g <- ggplot(data.table(p=sim$p), aes(x=p)) +
+        geom_histogram(bins=input$bars) +
+        theme_bw() +
+        labs(
+            x = "P-values",
+            y = "Number of P-values",
+            title = paste0(
+                "P-value Distribution with ",
+                round(power*100, 1),
+                "% power"
+            )
+        )
+    g
+})
 ```
 
 Daniel Lakens, 2016. 
