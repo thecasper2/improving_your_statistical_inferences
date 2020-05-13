@@ -1,4 +1,4 @@
-# Plotting likelihoods
+# Introduction and Frequentist Statistics
 
 ## Introduction
 

@@ -1,4 +1,4 @@
-# Plotting likelihoods
+# Binomial Bayesian Inference
 
 ## Introduction
 
