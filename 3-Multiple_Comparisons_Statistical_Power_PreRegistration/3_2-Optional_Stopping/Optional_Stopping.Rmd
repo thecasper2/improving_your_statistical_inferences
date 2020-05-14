@@ -1,0 +1,265 @@
+---
+title: "Optional Stopping"
+runtime: shiny
+output: 
+    html_document:
+        code_folding: hide
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(magrittr)
+library(shiny)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## {.tabset}
+
+### Single P-value over time {.tabset}
+
+```{r variables_single_p}
+rv <- reactiveValues(
+    simulation_history = data.table(run=numeric(), min_p=numeric()),
+    n_sims = 0
+)
+
+fluidRow(
+    #total number of datapoints (per condition)
+    column(5, numericInput("n", "Number of datapoints (n) after intial 10", value=200, min=1, max=1000)),
+    #True effect size (Keep SD below to 1, otherwise, this is just mean dif, not d)
+    column(2, numericInput("D", "True effect size (D)", value=0)),
+    #Set True standard deviation.
+    column(3, numericInput("SD", "True StdDev (SD)", value=1, min=0, max=1))
+)
+
+#Button to start simulation
+actionButton("run_sim", "Run simulation")
+
+run_single_p_sim <- eventReactive(input$run_sim, {
+    n <- input$n
+    D <- input$D
+    SD <- input$SD
+    #Create base output table
+    sim_data <- data.table(
+        iter = 1:(n+10),
+        x = numeric(n+10),
+        y = numeric(n+10),
+        p = numeric(n+10)
+    )
+    setkey(sim_data, iter)
+    #for each simulated participants after the first 10
+    withProgress(message = "Running simulation", {
+        for(i in 11:(n+10)){
+            if((i-10) %% round(n/10) == 0){incProgress(1/10)}
+            sim_data$x[i] <- rnorm(n = 1, mean = 0, sd = SD)
+            sim_data$y[i] <- rnorm(n = 1, mean = D, sd = SD)
+            #perform the t-test
+            z <- t.test(sim_data$x[1:i], sim_data$y[1:i], var.equal=TRUE)
+            sim_data$p[i] <- z$p.value 
+        }
+    })
+    #Remove first 10 empty runs
+    sim_data <- sim_data[iter >= 11]
+    #Find row where p is minimised
+    min_p <- sim_data[, .SD[which.min(p)]]
+    rv$n_sims <- rv$n_sims + 1
+    rv$simulation_history <- rbind(
+        rv$simulation_history,
+        data.table(run=rv$n_sims, min_p=min_p$p)
+    )
+    list(sim_data=sim_data, min_p=min_p)
+})
+```
+
+#### Current simulation
+
+```{r plot_single_p_values}
+#Display message if no simulation run yet
+renderText({if(input$run_sim <= 0) {print("Awaiting first simulation...")}})
+#For current simulation display the minimum P-value and the iteration at which
+#it was obtained
+renderText({
+    if(input$run_sim > 0) {
+        min_p <- run_single_p_sim()$min_p
+        print(
+            paste0(
+                "Minimum P-value: ", round(min_p$p, 2),
+                " obtained at iteration: ", min_p$iter
+            )
+        )
+    }
+})
+#Render a plot of the development of the P-value after observing each new
+#datapoint
+renderPlot({
+    data <- run_single_p_sim()$sim_data
+    g <- ggplot(data, aes(x=iter, y=p)) +
+        geom_line() +
+        theme_bw() +
+        expand_limits(y=c(0,1)) +
+        labs(
+            x = "Sample size",
+            y = "P-Value"
+        ) +
+        geom_hline(yintercept=0.05, col="red", linetype="dashed")
+    g
+})
+```
+
+#### Simulation history
+
+```{r sim_history}
+renderTable({rv$simulation_history})
+renderPrint({
+    cat(
+        paste0(
+            "Number of simulations: ",
+            rv$n_sims,
+            "\nNumber of simulations with a minimum P-value < 0.05: ",
+            length(rv$simulation_history[min_p < 0.05]$min_p),
+            "\nRatio of simulations with a minimum P-value < 0.05: ",
+            round(
+                length(rv$simulation_history[min_p < 0.05]$min_p)/rv$n_sims
+            , 4)
+        )
+    )
+})
+```
+
+### Optional stopping {.tabset}
+
+```{r optional_stopping variables}
+#disable scientific notation for numbers
+options(scipen=100, digits=4)
+
+fluidRow(
+    #Number of simulated studies
+    column(3, numericInput("nSim_os", "Number of simulated studies", value=5000, min=1, step=1)),
+    #Total number of datapoints (per condition) you are willing to collect
+    column(3, numericInput("n_os", "Number of datapoints (n)", value=100, min=1, max=1000)),
+    #Set number of looks at the data
+    column(2, numericInput("looks_os", "Looks at the data", value=5, min=1, step=1)),
+    #set alpha
+    column(2, numericInput("alpha_os", expression(alpha), value=0.05, min=0, max=1)),
+    #True effect size (must be 0 when simulating Type 1 errors)
+    column(2, numericInput("D_os", "True effect size (D)", value=0))
+)
+
+#Button to start simulation
+actionButton("run_sim_os", "Run simulation")
+
+run_os_sim <- eventReactive(input$run_sim_os, {
+    nSim_os <- input$nSim_os
+    n_os <- input$n_os
+    # We can only look n-1 times, we cannot look at the first datapoint
+    looks_os <- min(input$looks_os, n_os - 1)
+    #Always require at least 2 datapoints when taking a look
+    viable_look_datapoints <- seq(2, n_os)
+    # Find the integer that determines 
+    look_gap <- floor(n_os/looks_os)
+    look_indices <- c()
+    for(i in 1:looks_os){
+        #We will look at each point from the end of the look datapoints
+        #multiplied by the distance between each look. e.g. if there are 30
+        #indicies, and we have a look every 2 indicies, then we will look
+        #at 30, 28, 26, 24...
+        look_indices <- c(
+            look_indices, viable_look_datapoints[(n_os - 1) - (i-1)*look_gap]
+        )
+    }
+    look_indices <- look_indices[order(look_indices)]
+    #Create data.table for the results per look number
+    looks_out <- data.table(
+        look = seq(1, looks_os),
+        type1 = 0
+    )
+    #Create a vector of saved p-values
+    p_vals <- c()
+    #For each simulated study
+    withProgress(message="Running simulation", {
+        for(s in 1:nSim_os){
+            if(s %% round(nSim_os/10) == 0){incProgress(1/10)}
+            #Empty vector for storing p-values
+            p <- c()
+            sim_results <- data.table(
+                iter = 1:input$n_os,
+                x = rnorm(n = input$n_os, mean = 0, sd = 1),
+                y = rnorm(n = input$n_os, mean = input$D_os, sd = 1)
+            )
+            #Calculate p-value per look iteration
+            for(l in 1:looks_os){
+                #Identify the iteration to look at for this look
+                i <- look_indices[l]
+                #Append new p-value to p vector
+                current_p <- t.test(
+                    sim_results[1:i]$x, sim_results[1:i]$y, var.equal=TRUE
+                )$p.value
+                p <- c(p, current_p)
+                # If p value is significant, increment type1 for looks
+                if(current_p < input$alpha_os){
+                    looks_out[l]$type1 <- looks_out[l]$type1 + 1
+                }
+            }
+            #Take the first significant p-value over all looks. If it doesn't
+            #exist, then take the last
+            selected_p <- ifelse(
+                length(p[p < input$alpha_os]) == 0,
+                p[looks_os],
+                p[p < input$alpha_os][1]
+            )
+            p_vals <- c(p_vals, selected_p)
+        }
+    })
+    list(looks_out=looks_out, p_vals=p_vals)
+})
+```
+
+#### Histogram of p-values
+
+```{r plot_optional_stopping_p_values}
+renderPlot({
+    data <- data.table(x=run_os_sim()$p_vals)
+    ggplot(data, aes(x=x)) +
+        geom_histogram(fill="grey", col="black", bins=100) +
+        geom_hline(yintercept=input$nSim_os/100, col="red", linetype="dashed") +
+        theme_bw() +
+        labs(
+            x="p",
+            y="Frequency",
+            title="Histogram of p"
+        )
+})
+```
+
+
+#### Type1 error rates
+
+```{r optional_stopping_type_1_error_rates}
+renderPrint({
+    p_vals <- run_os_sim()$p_vals
+    cat(
+        paste0(
+            "Type 1 error rate when only the lowest p-value for all looks is reported: ",
+            sum(p_vals < input$alpha_os)/input$nSim_os
+        )
+    )
+})
+```
+
+Type 1 error rates for each look:
+
+```{r optional_stopping_type_1_error_rate_per_look}
+renderTable({
+    nSim_os <- input$nSim_os
+    looks_out <- run_os_sim()$looks_out
+    looks_out[, type1_error_rate := as.character(round(type1 / nSim_os, 4))]
+    looks_out[, c("look", "type1_error_rate")]
+})
+```
+
+#
+
+---
+Daniel Lakens, 2016. 
+This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. https://creativecommons.org/licenses/by-nc-sa/4.0/
