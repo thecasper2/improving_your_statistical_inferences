@@ -1,0 +1,16 @@
+---
+title: "Effect Sizes"
+runtime: shiny
+output: 
+    html_document:
+        code_folding: hide
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(magrittr)
+library(shiny)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
