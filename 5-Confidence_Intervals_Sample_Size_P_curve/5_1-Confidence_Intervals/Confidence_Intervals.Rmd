@@ -1,0 +1,125 @@
+---
+title: "Confidence Intervals"
+runtime: shiny
+output: 
+    html_document:
+        code_folding: hide
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(magrittr)
+library(shiny)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# {.tabset}
+
+## CI of two independent groups
+
+```{r ci_variables}
+fluidRow(
+    column(2, numericInput("m1", "X mean", value=3)),
+    column(2, numericInput("m2", "Y mean", value=5)),
+    column(2, numericInput("sd1", "X SD", value=4.5, min=0)),
+    column(2, numericInput("sd2", "Y SD", value=3.0, min=0)),
+    column(2, numericInput("n1", "n_x", value=50, min=1, step=1)),
+    column(2, numericInput("n2", "n_y", value=50, min=1, step=1))
+)
+actionButton("button", label="Run simulation", icon("refresh"))
+```
+
+```{r ci_calc}
+get_ci_data <- eventReactive(input$button, {
+    m1 <- input$m1 #mean group 1
+    m2 <- input$m2 #mean group 2
+    sd1 <- input$sd1 #sd group 1
+    sd2 <- input$sd2 #sd group 2
+    n1 <- input$n1 #sample size group 1
+    n2 <- input$n2 #sample size group 2
+    #get sample group 1 and 2
+    x <- rnorm(n = n1, mean = m1, sd = sd1)
+    y <- rnorm(n = n2, mean = m2, sd = sd2)
+    #get error group 1 and 2
+    error1 <- qnorm(0.975)*sd(x)/sqrt(n1)
+    error2 <- qnorm(0.975)*sd(y)/sqrt(n2)
+    #calculate confidence interval lower and upper limit for group 1 and 2
+    CI_l_1 <- mean(x)-error1
+    CI_u_1 <- mean(x)+error1
+    CI_l_2 <- mean(y)-error2
+    CI_u_2 <- mean(y)+error2
+    
+    #calc pooled standard error
+    se <- sqrt(sd(x)*sd(x)/n1+sd(y)*sd(y)/n2)
+    #error mean dif
+    error <- qt(0.975,df=n1+n2-2)*se
+    #mean dif
+    mdif<-mean(y)-mean(x)
+    #CI lower and upper limit difference
+    CI_l_d <- mdif-error
+    CI_u_d <- mdif+error
+    
+    #Combine results in a data.table
+    ci_data = data.table(
+        labels=factor(c("X","Y","Difference"), levels=c("X","Y","Difference")),
+        mean=c(mean(x),mean(y),mdif),
+        lower=c(CI_l_1,CI_l_2,CI_l_d),
+        upper = c(CI_u_1,CI_u_2,CI_u_d)
+    )
+    list(ci_data = ci_data, x = x, y = y)
+})
+```
+
+```{r ci_plot}
+renderText({
+    if(input$button <= 0){print("Awaiting simulation...")}
+})
+renderPlot({
+    ci_data <- get_ci_data()
+    plot_data <- melt(ci_data$ci_data, id=c("labels", "mean"))
+    rect_ymin <- max(
+        ci_data$ci_data[labels=="X"]$lower,
+        ci_data$ci_data[labels=="Y"]$lower
+    )
+    rect_ymax <- min(
+        ci_data$ci_data[labels=="X"]$upper,
+        ci_data$ci_data[labels=="Y"]$upper
+    )
+    g <- ggplot() +
+        geom_point(data=plot_data, aes(x=labels, y=mean), size=2) +
+        geom_line(data=plot_data, aes(x=labels, y=value)) +
+        geom_rect(
+            aes(
+                xmin=1,
+                xmax=2,
+                ymin=rect_ymin,
+                ymax=rect_ymax,
+            ),
+            alpha=0.2,
+            fill= ifelse(rect_ymin > rect_ymax, NA, "red")
+        ) +
+        theme_bw() +
+        expand_limits(y=0) +
+        labs(
+            x="Sample",
+            y="Mean",
+            title="",
+            subtitle=paste0(
+                "P-value: ",
+                round(t.test(ci_data$x, ci_data$y ,var.equal=TRUE)$p.value, 3),
+                "\nRegion of confidence interval overlap between sample X and",
+                " Y is shaded in red if it exists"
+            )
+    )
+    g
+})
+```
+
+
+## Prediction intervals
+
+#
+
+Daniel Lakens, 2016. 
+This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. https://creativecommons.org/licenses/by-nc-sa/4.0/
