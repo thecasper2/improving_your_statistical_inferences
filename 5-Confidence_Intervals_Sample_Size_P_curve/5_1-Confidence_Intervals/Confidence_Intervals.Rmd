@@ -10,9 +10,18 @@ output:
 library(data.table)
 library(ggplot2)
 library(magrittr)
+library(Rcpp)
 library(shiny)
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 ```
+
+<style>
+  .col2 {
+    columns: 2 200px;         /* number of columns and width in pixels*/
+    -webkit-columns: 2 200px; /* chrome, safari */
+    -moz-columns: 2 200px;    /* firefox */
+  }
+</style>
 
 # {.tabset}
 
@@ -71,6 +80,8 @@ get_ci_data <- eventReactive(input$button, {
 })
 ```
 
+---
+
 ```{r ci_plot}
 renderText({
     if(input$button <= 0){print("Awaiting simulation...")}
@@ -116,10 +127,211 @@ renderPlot({
 })
 ```
 
-
 ## Prediction intervals
 
+```{r pi_variables}
+fluidRow(
+    column(2, numericInput("pi_mu", "Mean", value=100)),
+    column(2, numericInput("pi_sd", "SD", value=15, min=0)),
+    column(2, numericInput("pi_n", "Sample size (n)", value=20, min=2, step=1)),
+    column(2, numericInput(
+        "pi_nSims", "Number of sims", value=100000, min=2, step=1)
+    ),
+    column(3, numericInput(
+        "pi_seed", "Set seed (set 0 to ignore)", value=0, min=0, step=1)
+    )
+)
+actionButton("pi_button", label="Run simulation", icon("refresh"))
+```
+
+
+```{r pi_calc}
+get_ci <- function(x){
+
+    #' Returns the upper and lower 95% confidence interval for a sample x
+    #' @param x A vector of samples
+
+    error <- qt(0.975, df = length(x)-1)*sd(x)*sqrt(1/length(x))
+    return(list(lower = mean(x)-error, upper = mean(x)+error))
+}
+
+get_pi <- function(x){
+
+    #' Gets the 95% prediction interval for a sample x
+    #' @param x A vector of samples
+
+    error <- qt(0.975, df = length(x)-1)*sd(x)*sqrt(1+1/length(x))
+    return(list(lower = mean(x)-error, upper = mean(x)+error))
+}
+
+get_pi_data <- eventReactive(input$pi_button, {
+    #Set seed if requested
+    if(input$pi_seed > 0){set.seed(input$pi_seed)}
+    #Extract variables from selectors
+    pi_mu <- input$pi_mu
+    pi_sd <- input$pi_sd
+    pi_n <- input$pi_n
+    pi_nSims <- input$pi_nSims
+    pi_seed <- input$pi_seed
+    #Run first simulation
+    #create sample from normal distribution
+    x_orig <- rnorm(n = pi_n, mean = pi_mu, sd = pi_sd)
+    #95% Confidence Interval
+    original_CI <- get_ci(x_orig)
+    #95% Prediction Interval
+    original_PI <- get_pi(x_orig)
+
+    #Run subsequent simulations
+    #Simulate Confidence Intervals
+    sim <- data.frame(
+        mean = numeric(pi_nSims),
+        lower = numeric(pi_nSims),
+        upper = numeric(pi_nSims)
+    )
+    sim_CIL <- numeric(pi_nSims)
+    sim_CIU <- numeric(pi_nSims)
+    sim_mean <- numeric(pi_nSims)
+
+    #for each simulated experiment
+    withProgress(message = "Running simulations...", {
+        for(i in 1:pi_nSims){
+            if(i %% round(pi_nSims/10) == 0){incProgress(0.1)}
+            #create sample from normal distribution
+            x <- rnorm(n = pi_n, mean = pi_mu, sd = pi_sd)
+            #store mean and CI of each sample
+            CI <- get_ci(x)
+            sim_CIL[i] <- CI$lower
+            sim_CIU[i] <- CI$upper
+            sim_mean[i] <- mean(x)
+        }
+    })
+
+    #Flag whether mean is within the CI
+    sim <- data.table(mean = sim_mean, lower = sim_CIL, upper = sim_CIU)
+    sim[, mean_in_ci := ((pi_mu <= upper) & (pi_mu >= lower))]
+    sim[, in_original_ci := (
+        (mean <= original_CI$upper) & (mean >= original_CI$lower))
+    ]
+
+    list(
+        original_sim = x_orig,
+        original_CI = original_CI,
+        sim = sim,
+        original_PI = original_PI,
+        mu = pi_mu,
+        sd = pi_sd
+    )
+})
+```
+
+---
+
+<div class="col2">
+
+```{r pi_original_simulation}
+renderText({
+    if(input$pi_button <= 0){print("Awaiting simulation...")}
+})
+
+renderPlot({
+    pi_data <- get_pi_data()
+    plot_data <- data.frame(vals = pi_data$original_sim)
+    obs_mean <- mean(plot_data$vals)
+    obs_sd <- sd(plot_data$vals)
+    g <- ggplot() +
+        geom_rect(
+            aes(
+                xmin=pi_data$original_PI$lower,
+                xmax=pi_data$original_PI$upper,
+                ymin=0,
+                ymax=Inf,
+            ),
+            alpha=0.5,
+            fill="blue"
+        ) +
+        geom_rect(
+            aes(
+                xmin=pi_data$original_CI$lower,
+                xmax=pi_data$original_CI$upper,
+                ymin=0,
+                ymax=Inf,
+            ),
+            alpha=0.5,
+            fill="red"
+        ) +
+        geom_histogram(data=plot_data, aes(x=vals)) +
+        geom_vline(xintercept = obs_mean, style="dashed") +
+        theme_bw() +
+        labs(
+            x="Sample values",
+            y="Frequency of values",
+            title=paste0(
+                "Distribution of samples from first simulation with mean:",
+                pi_data$mu, " and SD:", pi_data$sd
+            ),
+            subtitle=paste0(
+                "Observed mean from sample: ", round(obs_mean, 2),
+                "\nObserved SD from sample: ", round(obs_sd, 2),
+                "\nConfidence interval (red): [",
+                round(pi_data$original_CI$lower, 2),",",
+                round(pi_data$original_CI$upper, 2), "]",
+                "\nPrediction interval (blue): [",
+                round(pi_data$original_PI$lower, 2), ",",
+                round(pi_data$original_PI$upper, 2), "]"
+            )
+        )
+    g
+})
+```
+
+```{r pi_simulations}
+renderPlot({
+    pi_data <- get_pi_data()
+    sim_data <- pi_data$sim
+    sim_data <- sim_data[order(-lower)]
+    sim_data$row_num <- seq(1:nrow(sim_data))
+    sim_data <- sim_data[, c("row_num", "mean_in_ci", "lower", "upper")] %>%
+        melt(id=c("row_num", "mean_in_ci"))
+    g <- ggplot(sim_data, aes(x=row_num, y=value, col=mean_in_ci)) +
+        geom_line() +
+        theme_bw() +
+        scale_color_manual(values = c("TRUE" = "black", "FALSE" = "red")) +
+        labs(
+            x="Simulation Number",
+            y="CI Range",
+            col="CI contains true mean",
+            title=paste0(
+                "95% Confidence intervals of ", nrow(sim_data), " simulations"
+            ),
+            subtitle="Ordered by confidence interval lower bound"
+        )
+    g
+})
+
+output$pi_text <- renderText({
+    pi_data <- get_pi_data()
+    print(
+        paste0(
+            "<b>Subsequent Simulations<br>",
+            round(nrow(pi_data$sim[(mean_in_ci)]) * 100 / nrow(pi_data$sim), 2),
+            "%</b> of the 95% confidence intervals contained the true mean.",
+            "<br><br>",
+            "The capture percentage for the plotted study, or the % of sample",
+            " means falling within the original confidence interval from ",
+            round(pi_data$original_CI$lower, 2), " to ",
+            round(pi_data$original_CI$upper, 2), " is: <b>",
+            100*nrow(pi_data$sim[(in_original_ci)]) / nrow(pi_data$sim), "</b>%"
+        )
+    )
+})
+
+htmlOutput("pi_text")
+```
+</div>
+
 #
+
+---
 
 Daniel Lakens, 2016. 
 This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. https://creativecommons.org/licenses/by-nc-sa/4.0/
