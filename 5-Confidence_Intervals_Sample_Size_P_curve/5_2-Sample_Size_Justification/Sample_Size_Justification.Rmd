@@ -1,0 +1,161 @@
+---
+title: "Sample Size Justification"
+runtime: shiny
+output: 
+    html_document:
+        code_folding: hide
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(magrittr)
+library(pwr)
+library(shiny)
+knitr::opts_chunk$set(echo = FALSE)
+
+rv <- reactiveValues(v_means = numeric())
+
+getmode <- function(v) {
+    uniqv <- unique(v)
+    uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+<style>
+  .col2 {
+    columns: 2 200px;         /* number of columns and width in pixels*/
+    -webkit-columns: 2 200px; /* chrome, safari */
+    -moz-columns: 2 200px;    /* firefox */
+  }
+</style>
+
+# {.tabset}
+
+## Variation in Single Samples
+
+```{r v_variables}
+fluidRow(
+    column(2, numericInput("v_n", "Sample size (n)", value=10, min=1, step=1)),
+    column(2, numericInput("v_mu", "Population mean", value=100)),
+    column(2, numericInput("v_sd", "Population SD", value=15, min=0))
+)
+
+actionButton("v_button", label="Run simulation", icon("refresh"))
+```
+
+```{r v_run_simulation}
+run_v_simulation <- eventReactive(input$v_button, {
+    #create sample from normal distribution
+    x <- rnorm(n = input$v_n, mean = input$v_mu, sd = input$v_sd)
+    round_x <- round(x)
+    # Store simulation mean
+    rv$v_means <- c(rv$v_means, mean(x))
+
+    # Create hypothetical normal distrubition using observed parameters
+    sequence <- seq(min(x)/1.1, max(x)*1.1, length.out = 100)
+    norm_vals <- dnorm(
+        sequence, mean=mean(x), sd=sd(x)
+    )
+    # Normalise values so they plot nicely
+    norm_vals <- data.table(
+        x = sequence,
+        y = norm_vals * length(round_x[round_x == getmode(round_x)]) /
+          max(norm_vals)
+    )
+
+    list(
+        x = x, sample_mean = mean(x), sample_sd = sd(x), mu=input$v_mu,
+        sd = input$v_sd, n = input$v_n, norm_vals = norm_vals
+    )
+})
+```
+
+<div class="col2">
+
+```{r v_plot}
+renderText({if(input$v_button <= 0){print("Awaiting simulation...")}})
+renderPlot({
+    data <- run_v_simulation()
+    ggplot() +
+      geom_histogram(
+          data=data.table(x=data$x), aes(x=x), binwidth=1, col="white"
+      ) +
+      geom_line(
+          data=data$norm_vals, aes(x=x, y=y), col="red", linetype="dashed"
+      ) +
+      theme_bw() +
+      labs(
+          x="IQ",
+          y="Count",
+          title=paste0(
+              data$n, " IQ samples from population with mean: ", data$mu,
+              ", SD: ", data$sd
+          ),
+          subtitle=paste0(
+              "Observed mean: ", round(data$sample_mean, 2),
+              "\nObserved SD: ", round(data$sample_sd, 2)
+          )
+      )
+})
+```
+
+```{r v_text}
+output$v_text <- renderText({
+    if(input$v_button > 0){
+        paste0(
+            "<b>Observed simulation means (ordered by size):</b><br>",
+            paste0(round(rv$v_means[order(rv$v_means)], 2), collapse=", ")
+        )
+    }
+})
+
+htmlOutput("v_text")
+```
+
+</div>
+
+## Sample Size Calculator
+
+This calculates the number of participants required for each group for an
+independent t-test, with specified alpha and required power level, to observe
+a desired effect size.
+
+```{r s_variables}
+fluidRow(
+    column(3, numericInput(
+        "s_effect_size", "Expected effect side (d)", value=0.2, min=0, step=0.1)
+    ),
+    column(2, numericInput(
+        "s_alpha", "Alpha level", value=0.05, min=0, step=0.01)
+    ),
+    column(2, numericInput(
+        "s_power", "Required power", value=0.95, min=0, step=0.01)
+    )
+)
+```
+
+```{r s_samples required}
+renderText({
+    print(
+        paste0(
+            "Total samples required per group: ",
+            round(
+                pwr.t.test(
+                    d=input$s_effect_size,
+                    sig.level=input$s_alpha,
+                    power=input$s_power
+                )$n
+            )
+        )
+    )
+})
+```
+
+
+#
+
+---
+
+Daniel Lakens, 2016. 
+This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. https://creativecommons.org/licenses/by-nc-sa/4.0/
